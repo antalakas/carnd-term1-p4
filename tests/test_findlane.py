@@ -31,7 +31,9 @@ class TestFindLane(unittest.TestCase):
 
     #///////////////////////////////////////////////////
     def setUp(self):
-        pass
+        self.f = FindLane()
 
-    def test_1(self):
-        self.assertTrue(1 > 0)
+    def find_chessboard_corners(self):
+        successfully_calibrated = self.f.find_chessboard_corners(6, 9)
+        print("successfully calibrated: %s images" % str(successfully_calibrated))
+        self.assertTrue(successfully_calibrated == 17)

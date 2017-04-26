@@ -29,6 +29,6 @@ def test_suite():
 
     allTests = unittest.TestSuite()
 
-    allTests.addTest(TestFindLane('test_1'))
+    allTests.addTest(TestFindLane('find_chessboard_corners'))
 
     return allTests
