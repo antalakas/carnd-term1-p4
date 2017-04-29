@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from findlane import FindLane
+from calibratecamera import CalibrateCamera
 
 
 #///////////////////////////////////////////////////
@@ -15,16 +16,15 @@ def dependencies():
 #///////////////////////////////////////////////////
 #  FindLane command line interface
 def findlane_cli():
-
-    fl = FindLane()
-
-    # successfully_calibrated = fl.find_chessboard_corners(6, 9, False)
-    # fl.check_undistort(True)
+    # cc = CalibrateCamera()
+    #
+    # successfully_calibrated = cc.find_chessboard_corners(6, 9, False)
     # print("successfully calibrated: %s images" % str(successfully_calibrated))
     #
-    # fl.execute_pipeline()
+    # cc.check_undistort(False)
 
-    fl.execute_pipeline()
+    fl = FindLane()
+    fl.execute_image_pipeline(True)
 
 if __name__ == "__main__":
 
