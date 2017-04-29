@@ -24,7 +24,7 @@ def findlane_cli():
     #
     # fl.execute_pipeline()
 
-    fl.warp()
+    fl.execute_pipeline()
 
 if __name__ == "__main__":
 
