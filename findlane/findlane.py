@@ -6,11 +6,14 @@ import matplotlib.image as mpimg
 import matplotlib.cm as cm
 import pickle
 import ntpath
+from moviepy.editor import VideoFileClip
 
 
 class FindLane(object):
     def __init__(self):
         self.output_images_path = '../output_images/'
+        self.input_video_path = '../input_video/'
+        self.output_video_path = '../output_video/'
 
     def sobel_x_threshold(self, img, sx_thresh, visualize=False):
         # Grayscale image
@@ -204,6 +207,55 @@ class FindLane(object):
 
         return thresholded_binary, warped, out_img, ploty, left_fitx, right_fitx
 
+    def calculate_curvature(self, ploty, left_fitx, right_fitx):
+        y_eval = np.max(ploty)
+
+        ym_per_pix = 19.5 / 720  # meters per pixel in y dimension
+        xm_per_pix = 3.7 / 660  # meters per pixel in x dimension
+
+        # Fit new polynomials to x,y in world space
+        left_fit_cr = np.polyfit(ploty * ym_per_pix, left_fitx * xm_per_pix, 2)
+        right_fit_cr = np.polyfit(ploty * ym_per_pix, right_fitx * xm_per_pix, 2)
+
+        # Calculate the new radius of curvature
+        left_curverad = \
+            ((1 + (2 * left_fit_cr[0] * y_eval * ym_per_pix + left_fit_cr[1]) ** 2) ** 1.5) / \
+                np.absolute(2 * left_fit_cr[0])
+        right_curverad = ((1 + (2 * right_fit_cr[0] * y_eval * ym_per_pix + right_fit_cr[1]) ** 2) ** 1.5) / \
+                np.absolute(2 * right_fit_cr[0])
+
+        # Now our radius of curvature is in meters
+        print(left_curverad, 'm', right_curverad, 'm')
+        # Example values: 632.1 m    626.2 m
+
+    def project_back(self, undist, thresholded_binary, warped, ploty, left_fitx, right_fitx):
+        # Create an image to draw the lines on
+        warp_zero = np.zeros_like(warped).astype(np.uint8)
+        color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
+
+        # Recast the x and y points into usable format for cv2.fillPoly()
+        pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
+        pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
+        pts = np.hstack((pts_left, pts_right))
+
+        # Draw the lane onto the warped blank image
+        cv2.fillPoly(color_warp, np.int_([pts]), (0, 255, 0))
+
+        src = np.float32([[582, 460], [702, 460], [1102, 719], [206, 719]])
+        dst = np.float32([[320, 0], [980, 0], [980, 719], [320, 719]])
+
+        Minv = cv2.getPerspectiveTransform(dst, src)
+
+        # Warp the blank back to original image space using inverse perspective matrix (Minv)
+        newwarp = cv2.warpPerspective(color_warp, Minv, (thresholded_binary.shape[1], thresholded_binary.shape[0]))
+
+        # Combine the result with the original image
+        result = cv2.addWeighted(undist, 1, newwarp, 0.3, 0)
+        print('result shape', result.shape)
+        # plt.imshow(result)
+
+        return result
+
     def execute_image_pipeline(self, visualize=False):
         images = glob.glob(self.output_images_path + 'undist_*.jpg')
 
@@ -214,9 +266,17 @@ class FindLane(object):
 
             thresholded_binary, warped, out_img, ploty, left_fitx, right_fitx = self.pipeline(image)
 
+            print('\n---------- ')
+            print('Curvatures: ', image_fname)
+            self.calculate_curvature(ploty, left_fitx, right_fitx)
+            print('---------- \n')
+
+            result = self.project_back(image, thresholded_binary, warped, ploty, left_fitx, right_fitx)
+
             mpimg.imsave(self.output_images_path + 'thres_' + image_fname, thresholded_binary, cmap=cm.gray)
             mpimg.imsave(self.output_images_path + 'warp_' + 'thres_' + image_fname, warped, cmap=cm.gray)
             mpimg.imsave(self.output_images_path + 'out_' + 'warp_' + 'thres_' + image_fname, out_img)
+            mpimg.imsave(self.output_images_path + 'result_' + 'out_' + 'warp_' + 'thres_' + image_fname, result)
 
             if visualize:
                 # Plot the result
@@ -239,3 +299,17 @@ class FindLane(object):
                 ax2.plot(left_fitx, ploty, color='yellow')
                 ax2.plot(right_fitx, ploty, color='yellow')
                 plt.subplots_adjust(left=0., right=1, top=0.9, bottom=0.)
+
+    def execute_video_pipeline(self, image):
+        thresholded_binary, warped, out_img, ploty, left_fitx, right_fitx = self.pipeline(image)
+        return self.project_back(image, thresholded_binary, warped, ploty, left_fitx, right_fitx)
+
+    def project_video(self):
+        # Execute the pipeline for the video file
+        in_project_video = self.input_video_path + 'project_video.mp4'
+        project_clip = VideoFileClip(in_project_video)
+
+        out_project_clip = project_clip.fl_image(self.execute_video_pipeline)  # NOTE: this function expects color images!!
+
+        out_project_video = self.output_video_path + 'out_project_video.mp4'
+        out_project_clip.write_videofile(out_project_video, audio=False)
