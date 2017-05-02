@@ -24,9 +24,8 @@ def findlane_cli():
     # cc.check_undistort(False)
 
     fl = FindLane()
-    # fl.execute_image_pipeline(True)
-
-    fl.project_video()
+    fl.execute_image_pipeline(True)
+    # fl.project_video()
 
 if __name__ == "__main__":
 
