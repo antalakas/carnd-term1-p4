@@ -7,51 +7,60 @@ import matplotlib.cm as cm
 import pickle
 import ntpath
 from moviepy.editor import VideoFileClip
+from threshold import Threshold
+from lane import Lane
 
 
 class FindLane(object):
     def __init__(self):
+
+        self.image_shape = [0, 0]
+
+        self.camera_calibration_path = '../camera_cal/'
         self.output_images_path = '../output_images/'
         self.input_video_path = '../input_video/'
         self.output_video_path = '../output_video/'
 
-    def sobel_x_threshold(self, img, sx_thresh, visualize=False):
-        # Grayscale image
-        # img is the undistorted image
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        self.sobel_kernel_size = 7
+        self.sx_thresh = (60, 255)
+        self.sy_thresh = (60, 150)
+        self.s_thresh = (170, 255)
+        self.mag_thresh = (40, 255)
+        self.dir_thresh = (.65, 1.05)
 
-        # Sobel x
-        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0)  # Take the derivative in x
-        abs_sobelx = np.absolute(sobelx)  # Absolute x derivative to accentuate lines away from horizontal
-        scaled_sobel = np.uint8(255 * abs_sobelx / np.max(abs_sobelx))
+        self.wrap_src = np.float32([[595, 450], [686, 450], [1102, 719], [206, 719]])
+        # self.wrap_src = np.float32([[582, 460], [702, 460], [1102, 719], [206, 719]])
+        self.wrap_dst = np.float32([[320, 0], [980, 0], [980, 719], [320, 719]])
 
-        # Threshold x gradient
-        sxbinary = np.zeros_like(scaled_sobel)
-        sxbinary[(scaled_sobel >= sx_thresh[0]) & (scaled_sobel <= sx_thresh[1])] = 1
+        self.mask_offset = 30
+        self.vertices = [np.array([[206-self.mask_offset, 719],
+                                   [595-self.mask_offset, 460-self.mask_offset],
+                                   [686+self.mask_offset, 460-self.mask_offset],
+                                   [1102+self.mask_offset, 719]],
+                                  dtype=np.int32)]
+        # self.vertices = [np.array([[0, 719],
+        #                            [595-self.mask_offset, 460-self.mask_offset],
+        #                            [686+self.mask_offset, 460-self.mask_offset],
+        #                            [1280, 719]],
+        #                           dtype=np.int32)]
+        # self.vertices = [np.array([[206-self.mask_offset, 719],
+        #                            [582-self.mask_offset, 460-self.mask_offset],
+        #                            [702+self.mask_offset, 460-self.mask_offset],
+        #                            [1102+self.mask_offset, 719]],
+        #                           dtype=np.int32)]
 
-        return sxbinary
-
-    def color_threshold(self, img, s_thresh, visualize=False):
-        # Convert to HLS color space and separate the S channel
-        # img is the undistorted image
-        hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
-        s_channel = hls[:, :, 2]
-
-        # Threshold color channel
-        s_binary = np.zeros_like(s_channel)
-        s_binary[(s_channel >= s_thresh[0]) & (s_channel <= s_thresh[1])] = 1
-
-        return s_binary
+        self.thresh = Threshold()
+        self.lane = Lane()
 
     def warp(self, img, visualize=False):
         img_size = (img.shape[1], img.shape[0])
 
-        src = np.float32([[582, 460], [702, 460], [1102, 719], [206, 719]])
-        dst = np.float32([[320, 0], [980, 0], [980, 719], [320, 719]])
-
-        perspective_M = cv2.getPerspectiveTransform(src, dst)
+        perspective_M = cv2.getPerspectiveTransform(self.wrap_src, self.wrap_dst)
         # warped
         top_down = cv2.warpPerspective(img, perspective_M, img_size, flags=cv2.INTER_LINEAR)
+
+        top_down[:, 0:100] = 0
+        top_down[:, top_down.shape[1]-100:top_down.shape[1]] = 0
 
         if visualize:
             f, (ax1, ax2, ax3) = plt.subplots(3, sharex=True, figsize=(24, 9))
@@ -63,6 +72,7 @@ class FindLane(object):
             # plt.subplots_adjust(left=0., right=1, top=0.9, bottom=0.)
 
             histogram = np.sum(top_down[top_down.shape[0] // 2:, :], axis=0)
+            histogram[:180] = 0
             ax3.plot(histogram)
 
             # f, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 9))
@@ -78,140 +88,112 @@ class FindLane(object):
 
         return top_down
 
-    def find_lane(self, binary_warped, visualize=False):
-        # Assuming you have created a warped binary image called "binary_warped"
-        # Take a histogram of the bottom half of the image
-        histogram = np.sum(binary_warped[binary_warped.shape[0] // 2:, :], axis=0)
-        # Create an output image to draw on and  visualize the result
-        out_img = np.dstack((binary_warped, binary_warped, binary_warped)) * 255
 
-        print(binary_warped.shape)
-        print('binary_warped shape', binary_warped.shape)
-        print(out_img.shape)
-        print('out_img shape', out_img.shape)
+    def region_of_interest(self, img, vertices):
+        """
+        Applies an image mask.
 
-        # Find the peak of the left and right halves of the histogram
-        # These will be the starting point for the left and right lines
-        midpoint = np.int(histogram.shape[0] / 2)
-        leftx_base = np.argmax(histogram[:midpoint])
-        rightx_base = np.argmax(histogram[midpoint:]) + midpoint
+        Only keeps the region of the image defined by the polygon
+        formed from `vertices`. The rest of the image is set to black.
+        """
+        # defining a blank mask to start with
+        mask = np.zeros_like(img)
 
-        # Choose the number of sliding windows
-        nwindows = 9
-        # Set height of windows
-        window_height = np.int(binary_warped.shape[0] / nwindows)
-        # Identify the x and y positions of all nonzero pixels in the image
-        nonzero = binary_warped.nonzero()
-        nonzeroy = np.array(nonzero[0])
-        nonzerox = np.array(nonzero[1])
-        # Current positions to be updated for each window
-        leftx_current = leftx_base
-        rightx_current = rightx_base
-        # Set the width of the windows +/- margin
-        margin = 100
-        # Set minimum number of pixels found to recenter window
-        minpix = 50
-        # Create empty lists to receive left and right lane pixel indices
-        left_lane_inds = []
-        right_lane_inds = []
+        # defining a 3 channel or 1 channel color to fill the mask with depending on the input image
+        if len(img.shape) > 2:
+            channel_count = img.shape[2]  # i.e. 3 or 4 depending on your image
+            ignore_mask_color = (255,) * channel_count
+        else:
+            ignore_mask_color = 255
 
-        # Step through the windows one by one
-        for window in range(nwindows):
-            # Identify window boundaries in x and y (and right and left)
-            win_y_low = binary_warped.shape[0] - (window + 1) * window_height
-            win_y_high = binary_warped.shape[0] - window * window_height
-            win_xleft_low = leftx_current - margin
-            win_xleft_high = leftx_current + margin
-            win_xright_low = rightx_current - margin
-            win_xright_high = rightx_current + margin
+        # filling pixels inside the polygon defined by "vertices" with the fill color
+        cv2.fillPoly(mask, vertices, ignore_mask_color)
 
-            # # Draw the windows on the visualization image
-            cv2.rectangle(out_img, (win_xleft_low, win_y_low), (win_xleft_high, win_y_high), (0, 255, 0), 2)
-            cv2.rectangle(out_img, (win_xright_low, win_y_low), (win_xright_high, win_y_high), (0, 255, 0), 2)
-
-            # Identify the nonzero pixels in x and y within the window
-            good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xleft_low) & (
-            nonzerox < win_xleft_high)).nonzero()[0]
-            good_right_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xright_low) & (
-            nonzerox < win_xright_high)).nonzero()[0]
-            # Append these indices to the lists
-            left_lane_inds.append(good_left_inds)
-            right_lane_inds.append(good_right_inds)
-            # If you found > minpix pixels, recenter next window on their mean position
-            if len(good_left_inds) > minpix:
-                leftx_current = np.int(np.mean(nonzerox[good_left_inds]))
-            if len(good_right_inds) > minpix:
-                rightx_current = np.int(np.mean(nonzerox[good_right_inds]))
-
-        # Concatenate the arrays of indices
-        left_lane_inds = np.concatenate(left_lane_inds)
-        right_lane_inds = np.concatenate(right_lane_inds)
-
-        # Extract left and right line pixel positions
-        leftx = nonzerox[left_lane_inds]
-        lefty = nonzeroy[left_lane_inds]
-        rightx = nonzerox[right_lane_inds]
-        righty = nonzeroy[right_lane_inds]
-
-        # Fit a second order polynomial to each
-        left_fit = np.polyfit(lefty, leftx, 2)
-        right_fit = np.polyfit(righty, rightx, 2)
-
-        # Generate x and y values for plotting
-        ploty = np.linspace(0, binary_warped.shape[0] - 1, binary_warped.shape[0])
-        left_fitx = left_fit[0] * ploty ** 2 + left_fit[1] * ploty + left_fit[2]
-        right_fitx = right_fit[0] * ploty ** 2 + right_fit[1] * ploty + right_fit[2]
-
-        out_img[nonzeroy[left_lane_inds], nonzerox[left_lane_inds]] = [255, 0, 0]
-        out_img[nonzeroy[right_lane_inds], nonzerox[right_lane_inds]] = [0, 0, 255]
-
-        if visualize:
-            plt.imshow(out_img)
-            plt.plot(left_fitx, ploty, color='yellow')
-            plt.plot(right_fitx, ploty, color='yellow')
-            plt.xlim(0, 1280)
-            plt.ylim(720, 0)
-
-        return out_img, ploty, left_fitx, right_fitx
+        # returning the image only where mask pixels are nonzero
+        masked_image = cv2.bitwise_and(img, mask)
+        return masked_image
 
     # The pipeline.
-    def pipeline(self, img, s_thresh=(170, 255), sx_thresh=(20, 100), visualize=False):
-        sobel_thresh = self.sobel_x_threshold(img, sx_thresh)
-        print('sobel_thresh shape', sobel_thresh.shape)
-        color_thresh = self.color_threshold(img, s_thresh)
-        print('color_thresh shape', color_thresh.shape)
+    def pipeline(self, img, sobel_kernel_size=3, sx_thresh=(20, 100), sy_thresh=(20, 100), s_thresh=(170, 255),
+                 mag_thresh=(10, 255), dir_thresh=(0, 1), visualize=False):
 
-        # Stack each channel to view their individual contributions in green and blue respectively
-        # This returns a stack of the two binary images, whose components you can see as different colors
-        color_binary = np.dstack((np.zeros_like(sobel_thresh), sobel_thresh, color_thresh))
-        print('color_binary shape', color_binary.shape)
+        # # Scenario 1
+        # # def pipeline(self, img, s_thresh=(170, 255), sx_thresh=(20, 100), visualize=False):
+        # sobel_thresh = self.thresh.sobel_x_threshold(img, sx_thresh)
+        # print('sobel_thresh shape', sobel_thresh.shape)
+        # color_thresh = self.thresh.color_thresh(img, s_thresh)
+        # print('color_thresh shape', color_thresh.shape)
+        #
+        # # # Stack each channel to view their individual contributions in green and blue respectively
+        # # # This returns a stack of the two binary images, whose components you can see as different colors
+        # # color_binary = np.dstack((np.zeros_like(sobel_thresh), sobel_thresh, color_thresh))
+        # # print('color_binary shape', color_binary.shape)
+        #
+        # # Combine the two binary thresholds
+        # thresholded_binary = np.zeros_like(sobel_thresh)
+        # thresholded_binary[(color_thresh == 1) | (sobel_thresh == 1)] = 1
+        # print('thresholded_binary shape', thresholded_binary.shape)
 
-        # Combine the two binary thresholds
-        thresholded_binary = np.zeros_like(sobel_thresh)
-        thresholded_binary[(color_thresh == 1) | (sobel_thresh == 1)] = 1
-        print('thresholded_binary shape', thresholded_binary.shape)
+        # Scenario 2
+        # Perform Gaussian Blur
+        kernel_size = 5
+        img = cv2.GaussianBlur(img, (kernel_size, kernel_size), 0)
+
+        gray, gradx, grady = self.thresh.sobel_thresh(img, sx_thresh, sy_thresh, sobel_kernel_size)
+        #
+        # mag_binary = self.thresh.mag_thresh(gray, sobel_kernel=sobel_kernel_size, mag_thresh=mag_thresh)
+        # dir_binary = self.thresh.dir_threshold(gray, sobel_kernel=sobel_kernel_size, thresh=dir_thresh)
+        #
+        # sobel_combined = np.zeros_like(dir_binary)
+        # sobel_combined[((gradx == 1) & (grady == 1)) | ((mag_binary == 1) & (dir_binary == 1))] = 1
+        #
+        # color_thresh = self.thresh.color_thresh(img, s_thresh)
+        #
+        # thresholded_binary = np.zeros_like(sobel_combined)
+        # thresholded_binary[(color_thresh > 0) | (sobel_combined > 0)] = 1
+
+        sobel_combined = np.zeros_like(gradx)
+        sobel_combined[(gradx == 1) & (grady == 1)] = 1
+
+        color_thresh = self.thresh.color_thresh(img, s_thresh)
+
+        thresholded_binary = np.zeros_like(sobel_combined)
+        thresholded_binary[(color_thresh > 0) | (sobel_combined > 0)] = 1
+
+        # Masked area
+        thresholded_binary = self.region_of_interest(thresholded_binary, self.vertices)
+        thresholded_binary[0:450, :] = 0
 
         if visualize:
             # Plotting thresholded images
             f, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
-            ax1.set_title('Stacked thresholds')
-            ax1.imshow(color_binary)
+            ax1.set_title('Initial image')
+            ax1.imshow(img)
 
             ax2.set_title('Combined S channel and gradient thresholds')
             ax2.imshow(thresholded_binary, cmap='gray')
 
         warped = self.warp(thresholded_binary, False)
-        print('warped shape', warped.shape)
-
-        out_img, ploty, left_fitx, right_fitx = self.find_lane(warped)
+        out_img, ploty, left_fitx, right_fitx = self.lane.find(warped, False)
 
         return thresholded_binary, warped, out_img, ploty, left_fitx, right_fitx
 
-    def calculate_curvature(self, ploty, left_fitx, right_fitx):
+    def calculate_position(self, pts):
+        # Find the position of the car from the center
+        # It will show if the car is 'x' meters from the left or right
+        position = self.image_shape[1] / 2
+        left = np.min(pts[(pts[:, 1] < position) & (pts[:, 0] > 700)][:, 1])
+        right = np.max(pts[(pts[:, 1] > position) & (pts[:, 0] > 700)][:, 1])
+        center = (left + right) / 2
+        # Define conversions in x and y from pixels space to meters
+        xm_per_pix = 3.7 / 700  # meters per pixel in x dimension
+        return (position - center), (position - center) * xm_per_pix
+
+    def calculate_curvatures(self, ploty, left_fitx, right_fitx):
         y_eval = np.max(ploty)
 
-        ym_per_pix = 19.5 / 720  # meters per pixel in y dimension
-        xm_per_pix = 3.7 / 660  # meters per pixel in x dimension
+        ym_per_pix = 30 / 720  # meters per pixel in y dimension
+        xm_per_pix = 3.7 / 700  # meters per pixel in x dimension
 
         # Fit new polynomials to x,y in world space
         left_fit_cr = np.polyfit(ploty * ym_per_pix, left_fitx * xm_per_pix, 2)
@@ -225,8 +207,32 @@ class FindLane(object):
                 np.absolute(2 * right_fit_cr[0])
 
         # Now our radius of curvature is in meters
-        print(left_curverad, 'm', right_curverad, 'm')
-        # Example values: 632.1 m    626.2 m
+        return left_curverad, right_curverad
+
+    def plot_dashboard(self, image, ploty, left_fitx, right_fitx, newwarp):
+        left_curverad, right_curverad = self.calculate_curvatures(ploty, left_fitx, right_fitx)
+
+        # Put text on an image
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        text = "Radius of Left Line Curvature: {} m".format(int(left_curverad))
+        cv2.putText(image, text, (100, 50), font, 1, (255, 255, 255), 2)
+
+        text = "Radius of Right Line Curvature: {} m".format(int(right_curverad))
+        cv2.putText(image, text, (100, 100), font, 1, (255, 255, 255), 2)
+
+        # Find the position of the car
+        pts = np.argwhere(newwarp[:, :, 1])
+        position_pixels, position_meters = self.calculate_position(pts)
+
+        if position_meters < 0:
+            text = "Vehicle is {:.2f} m left of center".format(-position_meters)
+        else:
+            text = "Vehicle is {:.2f} m right of center".format(position_meters)
+        cv2.putText(image, text, (100, 150), font, 1, (255, 255, 255), 2)
+
+        return image
+
 
     def project_back(self, undist, thresholded_binary, warped, ploty, left_fitx, right_fitx):
         # Create an image to draw the lines on
@@ -241,20 +247,17 @@ class FindLane(object):
         # Draw the lane onto the warped blank image
         cv2.fillPoly(color_warp, np.int_([pts]), (0, 255, 0))
 
-        src = np.float32([[582, 460], [702, 460], [1102, 719], [206, 719]])
-        dst = np.float32([[320, 0], [980, 0], [980, 719], [320, 719]])
-
-        Minv = cv2.getPerspectiveTransform(dst, src)
+        Minv = cv2.getPerspectiveTransform(self.wrap_dst, self.wrap_src)
 
         # Warp the blank back to original image space using inverse perspective matrix (Minv)
         newwarp = cv2.warpPerspective(color_warp, Minv, (thresholded_binary.shape[1], thresholded_binary.shape[0]))
 
         # Combine the result with the original image
         result = cv2.addWeighted(undist, 1, newwarp, 0.3, 0)
-        print('result shape', result.shape)
+        # print('result shape', result.shape)
         # plt.imshow(result)
 
-        return result
+        return result, newwarp
 
     def execute_image_pipeline(self, visualize=False):
         images = glob.glob(self.output_images_path + 'undist_*.jpg')
@@ -262,16 +265,26 @@ class FindLane(object):
         for idx, fname in enumerate(images):
             image_fname = ntpath.basename(fname)
 
+            print("Processing", fname)
+
             image = mpimg.imread(self.output_images_path + image_fname)
 
-            thresholded_binary, warped, out_img, ploty, left_fitx, right_fitx = self.pipeline(image)
+            self.image_shape = image.shape
 
-            print('\n---------- ')
-            print('Curvatures: ', image_fname)
-            self.calculate_curvature(ploty, left_fitx, right_fitx)
-            print('---------- \n')
+            thresholded_binary, warped, out_img, ploty, left_fitx, right_fitx = \
+                self.pipeline(
+                    image,
+                    sobel_kernel_size=self.sobel_kernel_size,
+                    sx_thresh=self.sx_thresh,
+                    sy_thresh=self.sy_thresh,
+                    s_thresh=self.s_thresh,
+                    mag_thresh=self.mag_thresh,
+                    dir_thresh=self.dir_thresh,
+                    visualize=True)
 
-            result = self.project_back(image, thresholded_binary, warped, ploty, left_fitx, right_fitx)
+            result, newwarp = self.project_back(image, thresholded_binary, warped, ploty, left_fitx, right_fitx)
+
+            result = self.plot_dashboard(result, ploty, left_fitx, right_fitx, newwarp)
 
             mpimg.imsave(self.output_images_path + 'thres_' + image_fname, thresholded_binary, cmap=cm.gray)
             mpimg.imsave(self.output_images_path + 'warp_' + 'thres_' + image_fname, warped, cmap=cm.gray)
@@ -301,8 +314,18 @@ class FindLane(object):
                 plt.subplots_adjust(left=0., right=1, top=0.9, bottom=0.)
 
     def execute_video_pipeline(self, image):
-        thresholded_binary, warped, out_img, ploty, left_fitx, right_fitx = self.pipeline(image)
-        return self.project_back(image, thresholded_binary, warped, ploty, left_fitx, right_fitx)
+
+        handle = open(self.camera_calibration_path + "wide_dist_pickle.p", 'rb')
+        dist_pickle = pickle.load(handle)
+
+        undist_image = cv2.undistort(image, dist_pickle["mtx"], dist_pickle["dist"], None, dist_pickle["mtx"])
+
+        self.image_shape = undist_image.shape
+
+        thresholded_binary, warped, out_img, ploty, left_fitx, right_fitx = self.pipeline(undist_image)
+        result, newwarp = self.project_back(image, thresholded_binary, warped, ploty, left_fitx, right_fitx)
+
+        return self.plot_dashboard(result, ploty, left_fitx, right_fitx, newwarp)
 
     def project_video(self):
         # Execute the pipeline for the video file
