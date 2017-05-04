@@ -33,8 +33,17 @@ class Threshold(object):
         return gray, gradx, grady
 
     def color_thresh(self, img, s_thresh):
-        # Convert to HLS color space and separate the S channel
-        # img is the undistorted image
+
+        # gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        # mask_white = cv2.inRange(gray, 200, 255)
+        # image_hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        # lower_yellow = np.array([20, 100, 100], dtype="uint8")
+        # upper_yellow = np.array([30, 255, 255], dtype="uint8")
+        # mask_yellow = cv2.inRange(image_hsv, lower_yellow, upper_yellow)
+        # # Retrieve the final masked image
+        # mask_yellow_white = cv2.bitwise_or(mask_white, mask_yellow)
+        # plt.imshow(mask_yellow_white, cmap='gray')
+
         hls = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
         s_channel = hls[:, :, 2]
 
@@ -88,4 +97,4 @@ class Threshold(object):
             dir_binary = np.zeros_like(absgraddir)
             dir_binary[(absgraddir > thresh[0]) & (absgraddir < thresh[1])] = 1
         # Return the result
-        return dir_binary
+        return np.asarray(dir_binary, dtype="uint8")

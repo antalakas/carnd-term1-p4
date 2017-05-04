@@ -1,25 +1,31 @@
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+from line import Line
 
 class Lane(object):
     def __init__(self):
-        pass
 
-    def find(self, binary_warped, visualize=False):
+        self.n = 30
+
+        self.left_line = Line()
+        self.right_line = Line()
+
+        self.left_line.current_fit = [0, 0, 0]
+        self.right_line.current_fit = [0, 0, 0]
+
+        self.init_diff = True
+
+    def find(self, binary_warped, test_image_pipeline=False):
         # Assuming you have created a warped binary image called "binary_warped"
         # Take a histogram of the bottom half of the image
         histogram = np.sum(binary_warped[binary_warped.shape[0] // 2:, :], axis=0)
 
-        # histogram[:180] = 0
+        out_img = None
 
-        # Create an output image to draw on and visualize the result
-        out_img = np.dstack((binary_warped, binary_warped, binary_warped)) * 255
-
-        # print(binary_warped.shape)
-        # print('binary_warped shape', binary_warped.shape)
-        # print(out_img.shape)
-        # print('out_img shape', out_img.shape)
+        if test_image_pipeline:
+            # Create an output image to draw on and visualize the result
+            out_img = np.dstack((binary_warped, binary_warped, binary_warped)) * 255
 
         # Find the peak of the left and right halves of the histogram
         # These will be the starting point for the left and right lines
@@ -56,9 +62,10 @@ class Lane(object):
             win_xright_low = rightx_current - margin
             win_xright_high = rightx_current + margin
 
-            # # Draw the windows on the visualization image
-            cv2.rectangle(out_img, (win_xleft_low, win_y_low), (win_xleft_high, win_y_high), (0, 255, 0), 2)
-            cv2.rectangle(out_img, (win_xright_low, win_y_low), (win_xright_high, win_y_high), (0, 255, 0), 2)
+            if test_image_pipeline:
+                # Draw the windows on the visualization image
+                cv2.rectangle(out_img, (win_xleft_low, win_y_low), (win_xleft_high, win_y_high), (0, 255, 0), 2)
+                cv2.rectangle(out_img, (win_xright_low, win_y_low), (win_xright_high, win_y_high), (0, 255, 0), 2)
 
             # Identify the nonzero pixels in x and y within the window
             good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xleft_low) & (
@@ -79,28 +86,71 @@ class Lane(object):
         right_lane_inds = np.concatenate(right_lane_inds)
 
         # Extract left and right line pixel positions
-        leftx = nonzerox[left_lane_inds]
-        lefty = nonzeroy[left_lane_inds]
-        rightx = nonzerox[right_lane_inds]
-        righty = nonzeroy[right_lane_inds]
+        self.left_line.allx = nonzerox[left_lane_inds]
+        self.left_line.ally = nonzeroy[left_lane_inds]
+        self.right_line.allx = nonzerox[right_lane_inds]
+        self.right_line.ally = nonzeroy[right_lane_inds]
+
+        # save previous fit values for later use
+        left_line_previous_fit = self.left_line.current_fit[:]
+        right_line_previous_fit = self.right_line.current_fit[:]
 
         # Fit a second order polynomial to each
-        left_fit = np.polyfit(lefty, leftx, 2)
-        right_fit = np.polyfit(righty, rightx, 2)
+        self.left_line.current_fit = np.polyfit(self.left_line.ally, self.left_line.allx, 2)
+        self.right_line.current_fit = np.polyfit(self.right_line.ally, self.right_line.allx, 2)
+
+        # find difference in fit coefficients between current and previous image
+        self.left_line.diffs = left_line_previous_fit - self.left_line.current_fit
+        self.right_line.diffs = right_line_previous_fit - self.right_line.current_fit
+
+        if self.init_diff is True:
+            self.init_diff = False
+        else:
+            if not test_image_pipeline:
+                if abs(self.right_line.diffs[2]) > 250:
+                    self.right_line.current_fit = right_line_previous_fit[:]
+
+        # self.left_line.recent_fit.append(self.left_line.current_fit)
+        # if len(self.left_line.recent_fit) > self.n:
+        #     self.left_line.recent_fit.pop(0)
+        # # print( self.left_line.recent_fit)
+        # # print(np.average(self.left_line.recent_fit, axis=0))
+        # self.left_line.best_fit = np.average(self.left_line.recent_fit, axis=0)
+        # # print(self.left_line.best_fit)
+        #
+        # self.right_line.recent_fit.append(self.right_line.current_fit)
+        # if len(self.right_line.recent_fit) > self.n:
+        #     self.right_line.recent_fit.pop(0)
+        # # print( self.right_line.recent_fit)
+        # # print(np.average(self.right_line.recent_fit, axis=0))
+        # self.right_line.best_fit = np.average(self.right_line.recent_fit, axis=0)
+        # # print(self.right_line.best_fit)
 
         # Generate x and y values for plotting
         ploty = np.linspace(0, binary_warped.shape[0] - 1, binary_warped.shape[0])
-        left_fitx = left_fit[0] * ploty ** 2 + left_fit[1] * ploty + left_fit[2]
-        right_fitx = right_fit[0] * ploty ** 2 + right_fit[1] * ploty + right_fit[2]
+        # left_fitx = self.left_line.best_fit[0] * ploty ** 2 + self.left_line.best_fit[1] * ploty + self.left_line.best_fit[2]
+        # right_fitx = self.right_line.best_fit[0] * ploty ** 2 + self.right_line.best_fit[1] * ploty + self.right_line.best_fit[2]
+        left_fitx = self.left_line.current_fit[0] * ploty ** 2 + self.left_line.current_fit[1] * ploty + self.left_line.current_fit[2]
+        right_fitx = self.right_line.current_fit[0] * ploty ** 2 + self.right_line.current_fit[1] * ploty + self.right_line.current_fit[2]
 
-        out_img[nonzeroy[left_lane_inds], nonzerox[left_lane_inds]] = [255, 0, 0]
-        out_img[nonzeroy[right_lane_inds], nonzerox[right_lane_inds]] = [0, 0, 255]
+        if test_image_pipeline:
+            out_img[nonzeroy[left_lane_inds], nonzerox[left_lane_inds]] = [255, 0, 0]
+            out_img[nonzeroy[right_lane_inds], nonzerox[right_lane_inds]] = [0, 0, 255]
 
-        if visualize:
-            plt.imshow(out_img)
-            plt.plot(left_fitx, ploty, color='yellow')
-            plt.plot(right_fitx, ploty, color='yellow')
-            plt.xlim(0, 1280)
-            plt.ylim(720, 0)
+        if test_image_pipeline:
+            return out_img, ploty, left_fitx, right_fitx
+        else:
+            self.left_line.recent_xfitted.append(left_fitx)
+            if len(self.left_line.recent_xfitted) > self.n:
+                self.left_line.recent_xfitted.pop(0)
+            self.left_line.bestx = np.average(self.left_line.recent_xfitted, axis=0)
 
-        return out_img, ploty, left_fitx, right_fitx
+            self.right_line.recent_xfitted.append(right_fitx)
+            if len(self.right_line.recent_xfitted) > self.n:
+                self.right_line.recent_xfitted.pop(0)
+            self.right_line.bestx = np.average(self.right_line.recent_xfitted, axis=0)
+
+            self.left_line.detected = True
+            self.left_line.detected = True
+
+            return out_img, ploty, self.left_line.bestx, self.right_line.bestx
